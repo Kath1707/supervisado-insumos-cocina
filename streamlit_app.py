@@ -41,7 +41,7 @@ st.set_page_config(
     layout="wide",
 )
 
-EXCEL_PATH = "MA-PL-019_PLAN_CALIDAD_COCINA.xlsx"
+EXCEL_PATH = "data/MA-PL-019_PLAN_CALIDAD_COCINA.xlsx"
 SHEET_NAME = "COCINA"
 CLIENTE_FIJO = "STARBUCKS"
 AREA_FIJA = "COCINA"
@@ -301,11 +301,22 @@ def get_or_create_month_spreadsheet_id(drive, root_folder_id: str, fecha: date) 
     )
 
 
+
+def _es_marcador_footer(texto) -> bool:
+    """True si la celda es el pie de firma de la plantilla ('V°B° Jefe de Calidad',
+    'V°B° Supervisor de Calidad', 'VB° Jefe de Calidad'...). Se ignoran °, º, espacios y
+    mayúsculas para que un cambio menor de texto en la plantilla no rompa la detección."""
+    t = str(texto).upper()
+    for ch in ("°", "º", " ", "\n"):
+        t = t.replace(ch, "")
+    return t.startswith("VB") and "CALIDAD" in t
+
+
 def _encontrar_fila_footer(ws) -> int | None:
     valores = ws.get_all_values()
     for idx, fila in enumerate(valores, start=1):
         for celda in fila:
-            if celda.strip().upper().startswith(FOOTER_MARCA.upper()):
+            if _es_marcador_footer(celda):
                 return idx
     return None
 
@@ -346,7 +357,7 @@ def guardar_en_google_sheets(filas: list) -> tuple:
 
         fila_footer = _encontrar_fila_footer(ws)
         if fila_footer is None:
-            ws.append_rows(filas)
+            ws.append_rows(filas, table_range="A1")  # respaldo: siempre desde la columna A
         else:
             ws.insert_rows(filas, row=fila_footer)
 
