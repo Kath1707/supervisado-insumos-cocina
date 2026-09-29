@@ -41,7 +41,7 @@ st.set_page_config(
     layout="wide",
 )
 
-EXCEL_PATH = "data/MA-PL-019_PLAN_CALIDAD_COCINA.xlsx"
+EXCEL_PATH = "MA-PL-019_PLAN_CALIDAD_COCINA.xlsx"
 SHEET_NAME = "COCINA"
 CLIENTE_FIJO = "STARBUCKS"
 AREA_FIJA = "COCINA"
