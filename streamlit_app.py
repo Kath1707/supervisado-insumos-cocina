@@ -1,5 +1,6 @@
 """
 App de Registro de Parámetros de Calidad - Insumos de Cocina Dulce (B2B Starbucks)
+(v2 - incluye CONTROL DE INOCUIDAD: T° cocción y T° conservación, Plan MA-PL-019)
 =====================================================================================
 Streamlit + Google Drive/Sheets (histórico mensual, una hoja por día+turno).
 
@@ -40,7 +41,7 @@ st.set_page_config(
     layout="wide",
 )
 
-EXCEL_PATH = "MA-PL-019_PLAN_CALIDAD_COCINA.xlsx"
+EXCEL_PATH = "data/MA-PL-019_PLAN_CALIDAD_COCINA.xlsx"
 SHEET_NAME = "COCINA"
 CLIENTE_FIJO = "STARBUCKS"
 AREA_FIJA = "COCINA"
@@ -79,11 +80,60 @@ PARAM_DEFS = [
     ("observaciones", "Observaciones"),
 ]
 
+# ----------------------------------------------------------------------------
+# CONTROL DE INOCUIDAD (Plan MA-PL-019, hoja COCINA: columnas "T° COCCION" y "T° CONSERVACION")
+# Son controles a nivel de LOTE (una respuesta por registro, se repite en cada fila/muestra).
+# Solo se muestran si aplican al insumo (en el plan: "NO APLICA" -> se oculta y se guarda "No aplica").
+# ----------------------------------------------------------------------------
+INOCUIDAD_DEFS = [
+    # (clave, pestaña, encabezado del historial, pregunta)
+    ("t_coccion", "T° de cocción", "T° Cocción (C/NC)",
+     "¿Se cumplió el parámetro tiempo x temperatura de cocción? ({criterio})"),
+    ("t_conservacion", "T° de conservación", "T° Conservación (C/NC)",
+     "¿El insumo se conserva a la temperatura indicada en el plan? ({criterio})"),
+]
+
+# insumo (MAYÚSCULAS) -> {"t_coccion": True/False, "t_conservacion": criterio de conservación}
+# El criterio de cocción es siempre "Cumple parámetro tiempo x T°" y se completa con los
+# valores de Temperatura y Tiempo de la propia ficha del insumo.
+T_REFRIGERACION = "T° refrigeración (0 a 4 °C)"
+T_AMBIENTE = "T° ambiente"
+INOCUIDAD_COCINA = {
+    "FUDGE":            {"t_coccion": True,  "t_conservacion": T_REFRIGERACION},
+    "QUESO CREMA DURO": {"t_coccion": False, "t_conservacion": T_REFRIGERACION},
+    "COMPOTA MUFFIN":   {"t_coccion": True,  "t_conservacion": T_REFRIGERACION},
+    "MERMELADA MIXTA":  {"t_coccion": True,  "t_conservacion": T_REFRIGERACION},
+    "QUESO CREMA KEKE": {"t_coccion": False, "t_conservacion": T_REFRIGERACION},
+    "ALMÍBAR":          {"t_coccion": True,  "t_conservacion": T_AMBIENTE},
+    "MANJAR":           {"t_coccion": False, "t_conservacion": T_AMBIENTE},   # insumo comprado
+    "GLASSE":           {"t_coccion": True,  "t_conservacion": T_REFRIGERACION},
+}
+
+
+def inocuidad_de_insumo(insumo: str, fila) -> dict:
+    """{clave_control: criterio} de los controles de inocuidad que aplican al insumo."""
+    cfg = INOCUIDAD_COCINA.get(re.sub(r"\s+", " ", str(insumo)).strip().upper(), {})
+    out = {}
+    if cfg.get("t_coccion"):
+        partes = []
+        if campo_aplica(fila["temperatura"]):
+            partes.append(f"{fila['temperatura']} °C")
+        if campo_aplica(fila["tiempo"]):
+            partes.append(f"{fila['tiempo']} min")
+        detalle = f" ({' x '.join(partes)})" if partes else ""
+        out["t_coccion"] = "Cumple parámetro tiempo x T°" + detalle
+    if cfg.get("t_conservacion"):
+        out["t_conservacion"] = cfg["t_conservacion"]
+    return out
+
+
+# Orden del plan: ... Observaciones -> T° cocción -> T° conservación -> (Responsable)
 HEADERS_EXPORT = [
     "FECHA", "AREA", "CLIENTE", "N° de Muestra", "Insumo", "Lote (Juliano)",
     "Fecha de Elaboración", "Fecha de Vencimiento", "Conservación",
     "Brix (°B)", "Temperatura (°C)", "Tiempo (min)", "Textura", "Tamizado",
     "Apariencia y Color", "Olor", "Observaciones",
+    "T° Cocción (C/NC)", "T° Conservación (C/NC)",
     "Conclusión (C/NC)", "Iniciales",
 ]
 
@@ -156,8 +206,18 @@ def load_specs(excel_bytes: bytes) -> pd.DataFrame:
     cols = [
         "insumo", "brix", "temperatura", "tiempo", "textura", "tamizado",
         "apariencia_color", "olor", "vida_util", "conservacion",
-        "observaciones", "responsable",
+        "observaciones",
     ]
+    # El plan nuevo (v01, 27.07.26) agrega 2 columnas (T° COCCION, T° CONSERVACION) antes de
+    # RESPONSABLE. Sus criterios se leen de INOCUIDAD_COCINA (dentro de este código); aquí solo
+    # se saltan esas columnas para que "responsable" no se corra.
+    hdr = pd.read_excel(io.BytesIO(excel_bytes), sheet_name=SHEET_NAME, header=None, nrows=3)
+    layout_con_inocuidad = hdr.astype(str).apply(
+        lambda col: col.str.contains("COCC", case=False, na=False)
+    ).any().any()
+    if layout_con_inocuidad:
+        cols = cols + ["_t_coccion", "_t_conservacion"]
+    cols = cols + ["responsable"]
     df_raw = df_raw.iloc[:, : len(cols)]
     df_raw.columns = cols
     df_raw = df_raw[df_raw["insumo"].notna()].copy()
@@ -388,6 +448,10 @@ elif st.session_state.step == 3:
         if campo_aplica(fila["vida_util"]):
             st.markdown(f"**Vida útil:** {int(fila['vida_util'])} días")
         st.markdown(f"**Conservación:** {fila['conservacion']}")
+        inocu_ref = inocuidad_de_insumo(insumo_sel, fila)
+        for clave, tab_label, _, _ in INOCUIDAD_DEFS:
+            if clave in inocu_ref:
+                st.markdown(f"🛡️ **{tab_label}:** {inocu_ref[clave]}")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -396,6 +460,7 @@ elif st.session_state.step == 3:
         if st.button("Siguiente ➜", type="primary"):
             st.session_state.insumo = insumo_sel
             st.session_state.fila_insumo = fila.to_dict()
+            st.session_state.inocuidad_insumo = inocuidad_de_insumo(insumo_sel, fila)
             go_next()
             st.rerun()
 
@@ -523,10 +588,68 @@ elif st.session_state.step == 6:
             st.rerun()
 
 # ============================================================================
-# PASO 7 - CONCLUSIÓN DEL REGISTRO
+# PASO 7 - CONTROL DE INOCUIDAD (MA-PL-019) - solo los controles que aplican al insumo
 # ============================================================================
 elif st.session_state.step == 7:
-    st.header("6️⃣ Conclusión del registro")
+    st.header("6️⃣ Control de inocuidad")
+
+    criterios = st.session_state.get("inocuidad_insumo", {})
+    controles = [d for d in INOCUIDAD_DEFS if d[0] in criterios]
+
+    st.markdown(f"**Insumo:** {st.session_state.insumo}")
+
+    if "respuestas_inocuidad" not in st.session_state:
+        st.session_state.respuestas_inocuidad = {}
+    if "comentarios_inocuidad" not in st.session_state:
+        st.session_state.comentarios_inocuidad = {}
+
+    if not controles:
+        st.info("Según el plan de calidad (MA-PL-019), este insumo **no tiene controles de "
+                "inocuidad aplicables**. Puedes continuar.")
+    else:
+        st.caption("Solo se muestran los controles que aplican a este insumo. Se responden "
+                   "**una vez por lote** (valen para todas las muestras). Si marcas 'No conforme' "
+                   "se habilitará la acción correctiva.")
+        tabs_in = st.tabs([f"🛡️ {tab}" for _, tab, _, _ in controles])
+        for (clave, tab_label, _, plantilla_preg), tab in zip(controles, tabs_in):
+            with tab:
+                st.markdown(f"**{plantilla_preg.format(criterio=criterios[clave])}**")
+                actual = st.session_state.respuestas_inocuidad.get(clave, "Conforme")
+                st.session_state.respuestas_inocuidad[clave] = st.radio(
+                    "Resultado del lote", ["Conforme", "No conforme"],
+                    index=0 if actual == "Conforme" else 1,
+                    horizontal=True, key=f"widget_inocu_{clave}",
+                )
+                if st.session_state.respuestas_inocuidad[clave] == "No conforme":
+                    st.session_state.comentarios_inocuidad[clave] = st.text_area(
+                        f"Acción correctiva / comentario para '{tab_label}'",
+                        value=st.session_state.comentarios_inocuidad.get(clave, ""),
+                        key=f"comentario_inocu_{clave}",
+                    )
+                else:
+                    st.session_state.comentarios_inocuidad[clave] = ""
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.button("⬅ Atrás", on_click=go_back)
+    with col2:
+        if st.button("Siguiente ➜", type="primary"):
+            st.session_state.controles_inocuidad = [d[0] for d in controles]
+            go_next()
+            st.rerun()
+
+# ============================================================================
+# PASO 8 - CONCLUSIÓN DEL REGISTRO
+# ============================================================================
+elif st.session_state.step == 8:
+    st.header("7️⃣ Conclusión del registro")
+
+    nc_in = [d[1] for d in INOCUIDAD_DEFS
+             if d[0] in st.session_state.get("controles_inocuidad", [])
+             and st.session_state.respuestas_inocuidad.get(d[0]) == "No conforme"]
+    if nc_in:
+        st.warning("⚠️ Hay controles de inocuidad **No conforme**: " + ", ".join(nc_in)
+                   + ". Considéralo al concluir el registro.")
 
     conclusion = st.radio(
         "Conclusión",
@@ -545,10 +668,10 @@ elif st.session_state.step == 7:
             st.rerun()
 
 # ============================================================================
-# PASO 8 - RESUMEN FINAL, GUARDADO EN SHEETS Y EXPORTACIÓN
+# PASO 9 - RESUMEN FINAL, GUARDADO EN SHEETS Y EXPORTACIÓN
 # ============================================================================
-elif st.session_state.step == 8:
-    st.header("7️⃣ Resumen final")
+elif st.session_state.step == 9:
+    st.header("8️⃣ Resumen final")
 
     fila = st.session_state.fila_insumo
     n = st.session_state.n_muestras
@@ -593,6 +716,28 @@ elif st.session_state.step == 8:
         }
     st.dataframe(pd.DataFrame(conteo).T, use_container_width=True)
 
+    controles_activos = st.session_state.get("controles_inocuidad", [])
+    if controles_activos:
+        st.subheader("Control de inocuidad (lote)")
+        st.dataframe(
+            pd.DataFrame({
+                "Control": [d[1] for d in INOCUIDAD_DEFS if d[0] in controles_activos],
+                "Resultado": [st.session_state.respuestas_inocuidad.get(d[0], "Conforme")
+                              for d in INOCUIDAD_DEFS if d[0] in controles_activos],
+            }),
+            use_container_width=True, hide_index=True,
+        )
+
+    def valor_inocuidad(clave):
+        if clave not in controles_activos:
+            return "No aplica"
+        valor = st.session_state.respuestas_inocuidad.get(clave, "Conforme")
+        if valor == "No conforme":
+            accion = st.session_state.comentarios_inocuidad.get(clave, "").strip()
+            if accion:
+                return f"No conforme: {accion}"
+        return valor
+
     # ------------------------------------------------------------------
     # Armado de las filas exportables (una fila por muestra)
     # ------------------------------------------------------------------
@@ -624,6 +769,8 @@ elif st.session_state.step == 8:
             valor_muestra("apariencia_color", i),
             valor_muestra("olor", i),
             valor_muestra("observaciones", i),
+            valor_inocuidad("t_coccion"),
+            valor_inocuidad("t_conservacion"),
             st.session_state.conclusion,
             iniciales(st.session_state.responsable),
         ])
